@@ -78,7 +78,7 @@ class Alias(object):
 
   def decode_zi(self):
     state = self.state
-    tf.get_variable_scope()
+
     with tf.variable_scope("decoder"):
       if self.mode == 'train':
         outputs = []
@@ -185,16 +185,14 @@ def train():
     word_vec[word_id[feilds[0]]] = [float(i) for i in feilds[1:]]
 
   f = open('data/name_alias/name_zi.txt')
-
-  inputs = []
+  inputs = defaultdict(list)
   for line in f.readlines():
     feilds = line.strip().decode('utf-8').split()
     if len(feilds) != 2 or len(feilds[1]) < 2:
       print(line)
       continue
-    names = [[word_id[term] for term in  list(name)] for name in feilds]
-    # name length, name, zi
-    inputs.append((len(names[0]), names[0], names[1][:2]))
+    names = [[word_id[term] for term in list(name)] for name in feilds]
+    inputs[len(names[0])].append((names[0], names[1][:2]))
 
   g = tf.Graph()
   with g.as_default():
@@ -238,21 +236,24 @@ def train():
       total_loss = []
       for e in range(epoch):
         print(e)
-        i = 0
-        while i < len(inputs):
-          batch = inputs[i: i + batch_size]
-          names_batch = [line[1] for line in batch]
-          zis_batch = [line[2] for line in batch]
+        for bucket, values in inputs.items():
+          if len(values) < 100:
+            continue
+          names = [value[0] for value in values]
+          zis = [value[1] for value in values]
+          i = 0
+          while i < len(names):
+            names_batch = names[i: i + batch_size]
+            zis_batch = zis[i: i + batch_size]
+            target_batch = [zi + [End_Id] for zi in zis_batch]
+            zis_batch = [[Go_Id] + zi for zi in zis_batch]
+            names_num_batch = [bucket] * len(names_batch)
+            i += batch_size
 
-          target_batch = [zi + [End_Id] for zi in zis_batch]
-          zis_batch = [[Go_Id] + zi for zi in zis_batch]
-          names_num_batch = [line[0] for line in batch]
-          i += batch_size
+            feed_dict = {"name:0": names_batch, "zi:0": zis_batch, "target:0": target_batch, "name_num:0": names_num_batch}
 
-          feed_dict = {"name:0": names_batch, "zi:0": zis_batch, "target:0": target_batch, "name_num:0": names_num_batch}
-
-          batch_loss, np_global_step = sess.run([train_tensor, model.global_step], feed_dict=feed_dict)
-          total_loss.append(batch_loss)
+            batch_loss, np_global_step = sess.run([train_tensor, model.global_step], feed_dict=feed_dict)
+            total_loss.append(batch_loss)
 
         print(np.mean(total_loss), np_global_step)
 
