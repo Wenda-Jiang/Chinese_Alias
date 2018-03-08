@@ -78,14 +78,16 @@ class Alias(object):
 
   def decode_zi(self):
     state = self.state
+    tf.get_variable_scope()
     with tf.variable_scope("decoder"):
       if self.mode == 'train':
-        decode_input = tf.unstack(self.zi_emb, axis=1)
-
         outputs = []
-        for inp in decode_input:
-          output, state = self.decode_step(inp, state, reuse=False if len(outputs) == 0 else True)
-          outputs.append(output)
+        decode_input = tf.unstack(self.zi_emb, axis=1)
+        with tf.variable_scope("step_iter"):
+
+          for inp in decode_input:
+            output, state = self.decode_step(inp, state, reuse=False if len(outputs) == 0 else True)
+            outputs.append(output)
 
         logits = tf.layers.dense(tf.transpose(outputs, [1, 0, 2]), term_size, name="logits")
         losses = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.target, logits=logits)
@@ -182,16 +184,17 @@ def train():
       continue
     word_vec[word_id[feilds[0]]] = [float(i) for i in feilds[1:]]
 
-  f = open('data/shici/name_zi.txt')
+  f = open('data/name_alias/name_zi.txt')
 
-  inputs = defaultdict(list)
+  inputs = []
   for line in f.readlines():
     feilds = line.strip().decode('utf-8').split()
     if len(feilds) != 2 or len(feilds[1]) < 2:
       print(line)
       continue
     names = [[word_id[term] for term in  list(name)] for name in feilds]
-    inputs[len(names[0])].append((names[0], names[1][:2]))
+    # name length, name, zi
+    inputs.append((len(names[0]), names[0], names[1][:2]))
 
   g = tf.Graph()
   with g.as_default():
@@ -230,28 +233,29 @@ def train():
 
       create_restore_fn(checkpoint_dir, saver, sess)
 
-      epoch = 10
+      epoch = 1000
       batch_size = 256
+      total_loss = []
       for e in range(epoch):
         print(e)
-        for bucket, values in inputs.items():
-          names = [value[0] for value in values]
-          zis = [value[1] for value in values]
-          i = 0
-          while i < len(names):
-            names_batch = names[i: i + batch_size]
-            zis_batch = zis[i: i + batch_size]
-            target_batch = [zi + [End_Id] for zi in zis_batch]
-            zis_batch = [[Go_Id] + zi for zi in zis_batch]
-            names_num_batch = [bucket] * len(names_batch)
-            i += batch_size
+        i = 0
+        while i < len(inputs):
+          batch = inputs[i: i + batch_size]
+          names_batch = [line[1] for line in batch]
+          zis_batch = [line[2] for line in batch]
 
-            feed_dict = {"name:0": names_batch, "zi:0": zis_batch, "target:0": target_batch, "name_num:0": names_num_batch}
+          target_batch = [zi + [End_Id] for zi in zis_batch]
+          zis_batch = [[Go_Id] + zi for zi in zis_batch]
+          names_num_batch = [line[0] for line in batch]
+          i += batch_size
 
-            total_loss, np_global_step = sess.run([train_tensor, model.global_step], feed_dict=feed_dict)
+          feed_dict = {"name:0": names_batch, "zi:0": zis_batch, "target:0": target_batch, "name_num:0": names_num_batch}
 
-            if np_global_step % 32 == 0:
-              print(total_loss, np_global_step)
+          batch_loss, np_global_step = sess.run([train_tensor, model.global_step], feed_dict=feed_dict)
+          total_loss.append(batch_loss)
+
+        print(np.mean(total_loss), np_global_step)
+
 
       save_path = os.path.join(checkpoint_dir, "model.ckpt")
       saver.save(sess, save_path, global_step=model.global_step)
