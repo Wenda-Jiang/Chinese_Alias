@@ -78,40 +78,40 @@ class Alias(object):
 
   def decode_zi(self):
     state = self.state
+    with tf.variable_scope("decoder"):
+      if self.mode == 'train':
+        decode_input = tf.unstack(self.zi_emb, axis=1)
 
-    if self.mode == 'train':
-      decode_input = tf.unstack(self.zi_emb, axis=1)
+        outputs = []
+        for inp in decode_input:
+          output, state = self.decode_step(inp, state, reuse=False if len(outputs) == 0 else True)
+          outputs.append(output)
 
-      outputs = []
-      for inp in decode_input:
-        output, state = self.decode_step(inp, state, reuse=False if len(outputs) == 0 else True)
-        outputs.append(output)
+        logits = tf.layers.dense(tf.transpose(outputs, [1, 0, 2]), term_size, name="logits")
+        losses = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.target, logits=logits)
 
-      logits = tf.layers.dense(tf.transpose(outputs, [1, 0, 2]), term_size, name="logits")
-      losses = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.target, logits=logits)
+        self.batch_loss = tf.reduce_mean(losses)
+        tf.losses.add_loss(self.batch_loss)
 
-      self.batch_loss = tf.reduce_mean(losses)
-      tf.losses.add_loss(self.batch_loss)
+      else:
+        beam_size = 4
+        output, state = self.decode_step(self.zi_emb, self.state, False)
+        logit = tf.nn.softmax(tf.layers.dense(output, term_size, name="logits"))
+        values_first, indices_first = tf.nn.top_k(logit, k=beam_size)
+        seconds_i = tf.unstack(indices_first, axis=1, num=beam_size)
+        seconds_v = tf.unstack(values_first, axis=1, num=beam_size)
 
-    else:
-      beam_size = 4
-      output, state = self.decode_step(self.zi_emb, self.state, False)
-      logit = tf.nn.softmax(tf.layers.dense(output, term_size, name="logits"))
-      values_first, indices_first = tf.nn.top_k(logit, k=beam_size)
-      seconds_i = tf.unstack(indices_first, axis=1, num=beam_size)
-      seconds_v = tf.unstack(values_first, axis=1, num=beam_size)
+        self.results_i = []
+        self.results_v = []
 
-      self.results_i = []
-      self.results_v = []
-
-      for inp, inp_value in zip(seconds_i, seconds_v):
-        values_emb = tf.nn.embedding_lookup(self.word_emb, inp)
-        o2, s2 = self.decode_step(values_emb, state, reuse=True)
-        l2 = tf.nn.softmax(tf.layers.dense(o2, term_size, name="logits", reuse=True))
-        v2, i2 = tf.nn.top_k(l2, k=beam_size)
-        for i, v in zip(tf.unstack(i2, axis=1), tf.unstack(v2, axis=1)):
-          self.results_i.append(tf.squeeze(tf.stack([inp, i])))
-          self.results_v.append(tf.squeeze(tf.stack([inp_value, v])))
+        for inp, inp_value in zip(seconds_i, seconds_v):
+          values_emb = tf.nn.embedding_lookup(self.word_emb, inp)
+          o2, s2 = self.decode_step(values_emb, state, reuse=True)
+          l2 = tf.nn.softmax(tf.layers.dense(o2, term_size, name="logits", reuse=True))
+          v2, i2 = tf.nn.top_k(l2, k=beam_size)
+          for i, v in zip(tf.unstack(i2, axis=1), tf.unstack(v2, axis=1)):
+            self.results_i.append(tf.squeeze(tf.stack([inp, i])))
+            self.results_v.append(tf.squeeze(tf.stack([inp_value, v])))
 
   def build_loss(self):
 
