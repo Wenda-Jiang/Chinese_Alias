@@ -4,7 +4,6 @@ from __future__ import division
 from __future__ import print_function
 
 import tensorflow as tf
-import time
 import os
 import numpy as np
 from collections import defaultdict
@@ -61,22 +60,6 @@ class Alias(object):
       self.zi = tf.placeholder(tf.int32, shape=[None], name="zi")
     self.zi_emb = tf.nn.embedding_lookup(self.word_emb, self.zi)
 
-
-  def encoder(self, input, init_state, batch_size):
-    state = init_state
-    with tf.variable_scope("encoder"):
-      outputs = []
-      if state is None:
-        state = self.cell.zero_state(batch_size, tf.float32)
-      for j, inp in enumerate(input):
-        inp = tf.reshape(inp, [batch_size, 100])
-        if j > 0:
-          tf.get_variable_scope().reuse_variables()
-        output, state = self.cell(inp, state)
-        outputs.append(output)
-    return outputs, state
-
-
   def encoding_name(self):
     """
     :param name_seq: 3-D tensor [batch_size, seq_len, embedding_dim]
@@ -86,7 +69,6 @@ class Alias(object):
       outputs, state = tf.nn.dynamic_rnn(self.cell, self.name_emb, sequence_length=self.name_num, dtype=tf.float32)
       self.state = state
     return outputs, state
-
 
   def decode_step(self, input, pre_state, reuse=True):
     if reuse:
@@ -106,15 +88,14 @@ class Alias(object):
         outputs.append(output)
 
       logits = tf.layers.dense(tf.transpose(outputs, [1, 0, 2]), term_size, name="logits")
-      losses = tf.nn.sparse_softmax_cross_entropy_with_logits(
-        labels=self.target, logits=logits)
+      losses = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.target, logits=logits)
 
       self.batch_loss = tf.reduce_mean(losses)
       tf.losses.add_loss(self.batch_loss)
 
     else:
       beam_size = 4
-      output, state = self.decode_step(self.zi_emb, self.state)
+      output, state = self.decode_step(self.zi_emb, self.state, False)
       logit = tf.nn.softmax(tf.layers.dense(output, term_size, name="logits"))
       values_first, indices_first = tf.nn.top_k(logit, k=beam_size)
       seconds_i = tf.unstack(indices_first, axis=1, num=beam_size)
@@ -125,7 +106,7 @@ class Alias(object):
 
       for inp, inp_value in zip(seconds_i, seconds_v):
         values_emb = tf.nn.embedding_lookup(self.word_emb, inp)
-        o2, s2 = self.decode_step(values_emb, state, reuse=False)
+        o2, s2 = self.decode_step(values_emb, state, reuse=True)
         l2 = tf.nn.softmax(tf.layers.dense(o2, term_size, name="logits", reuse=True))
         v2, i2 = tf.nn.top_k(l2, k=beam_size)
         for i, v in zip(tf.unstack(i2, axis=1), tf.unstack(v2, axis=1)):
