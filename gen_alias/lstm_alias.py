@@ -163,9 +163,14 @@ def test():
       feed_dict = {"name:0": names_batch, "name_num:0": names_num_batch, "zi:0": zis_batch}
 
       index, value = sess.run([model.results_i, model.results_v], feed_dict=feed_dict)
-
+      a = []
       for i, v in zip(index, value):
-        print(''.join([id_word[term] for term in i]), v)
+        a.append((''.join([id_word[term] for term in i]), v[0] * v[1]))
+
+      b = sorted(a, key=lambda x: x[1], reverse=True)
+      for term, value in b:
+        print(term, value)
+
 
 
 def train():
@@ -225,7 +230,12 @@ def train():
     gpu_config.gpu_options.allow_growth = True
 
     with tf.Session(graph=g, config=gpu_config) as sess:
+
+      merged_summary_op = tf.summary.merge_all()
+      summary_writer = tf.summary.FileWriter(checkpoint_dir, g)
+
       sess.run(tf.global_variables_initializer())
+
       # save graph def
       graph_io.write_graph(g.as_graph_def(add_shapes=True), checkpoint_dir, "graph.pbtxt", as_text=False)
 
@@ -252,11 +262,13 @@ def train():
 
             feed_dict = {"name:0": names_batch, "zi:0": zis_batch, "target:0": target_batch, "name_num:0": names_num_batch}
 
-            batch_loss, np_global_step = sess.run([train_tensor, model.global_step], feed_dict=feed_dict)
+            summary, batch_loss, np_global_step = \
+              sess.run([merged_summary_op, train_tensor, model.global_step], feed_dict=feed_dict)
             total_loss.append(batch_loss)
 
-        print(np.mean(total_loss), np_global_step)
+            summary_writer.add_summary(summary, i)
 
+        print(np.mean(total_loss), np_global_step)
 
       save_path = os.path.join(checkpoint_dir, "model.ckpt")
       saver.save(sess, save_path, global_step=model.global_step)
