@@ -11,12 +11,13 @@ from tensorflow.python.framework import graph_io
 from tensorflow.python.training import saver as saver_mod
 
 term_size = 5000
+beam_size = 10
 Go_Id = 0
 End_Id = 1
 UNK_Id = 2
 
-def create_restore_fn(checkpoint_path, saver, sess):
 
+def create_restore_fn(checkpoint_path, saver, sess):
   if tf.gfile.IsDirectory(checkpoint_path):
     latest_checkpoint = tf.train.latest_checkpoint(checkpoint_path)
     if not latest_checkpoint:
@@ -33,11 +34,63 @@ def create_restore_fn(checkpoint_path, saver, sess):
   tf.logging.info("Successfully loaded checkpoint: %s", os.path.basename(checkpoint_path))
 
 
+def _bahdanau_score(processed_query, keys, normalize):
+  '''
+  process attention score
+  :param processed_query: singe step hidden state, 2-D tensor [batch_size, num_units]
+  :param keys: encoder ouput, 3-D tensor [batch_size, max_times, num_units]
+  :param normalize: 
+  :return: softmax score, 3-D tensor [batch_size, max_times, num_units]
+  '''
+
+  dtype = processed_query.dtype
+  num_units = keys.shape[2].value or tf.shape(keys)[2]
+
+  processed_query = tf.expand_dims(processed_query, 1)
+  v = tf.get_variable("attention_v", [num_units], dtype=dtype)
+  if normalize:
+    # Scalar used in weight normalization
+    g = tf.get_variable("attention_g", dtype=dtype,
+        initializer=tf.math.sqrt((1. / num_units)))
+    # Bias added prior to the nonlinearity
+    b = tf.get_variable("attention_b", [num_units], dtype=dtype, initializer=tf.zeros_initializer())
+    # normed_v = g * v / ||v||
+    normed_v = g * v * tf.rsqrt(tf.reduce_sum(tf.square(v)))
+    return tf.reduce_sum(normed_v * tf.tanh(keys + processed_query + b), [2])
+  else:
+    return tf.reduce_sum(v * tf.tanh(keys + processed_query), [2])
+
+def attention(processed_query, keys, normalize):
+
+  score = _bahdanau_score(processed_query, keys, normalize)
+
+  att = tf.reduce_sum(score * keys, axis=1)
+
+  return att
+
+
+def _extract_argmax(embedding,
+                    beam_size,
+                    output_projection=True,
+                    update_embedding=False):
+  def loop_function(prev, _):
+    if output_projection is not None:
+      prev = tf.layers.dense(prev, term_size)
+    values_first, ids_prev = tf.nn.top_k(prev, k=beam_size)
+    emb_prev = tf.nn.embedding_lookup(embedding, ids_prev)
+
+    emb_prev = tf.unstack(emb_prev, axis=1, num=beam_size)
+    value_prev = tf.unstack(values_first, axis=1, num=beam_size)
+
+    if not update_embedding:
+      emb_prev = tf.stop_gradient(emb_prev)
+    return emb_prev, value_prev, ids_prev
+
+  return loop_function
 
 
 class Alias(object):
-
-  def __init__(self, init_embedding = None, mode='train'):
+  def __init__(self, init_embedding=None, mode='train'):
     print(np.shape(init_embedding))
     self.cell = tf.nn.rnn_cell.LSTMCell(64)
     self.cell = tf.nn.rnn_cell.DropoutWrapper(self.cell, input_keep_prob=0.8 if mode == 'train' else 1.0)
@@ -45,7 +98,8 @@ class Alias(object):
     self.mode = mode
     self.state = None
     self.word_emb = tf.get_variable(name="term_embedding", shape=[term_size, 100], dtype=tf.float32,
-                                    initializer=tf.constant_initializer(init_embedding) if init_embedding is not None else None)
+                                    initializer=tf.constant_initializer(
+                                      init_embedding) if init_embedding is not None else None)
 
   def build_input(self):
 
@@ -68,13 +122,20 @@ class Alias(object):
     with tf.variable_scope("encoder"):
       outputs, state = tf.nn.dynamic_rnn(self.cell, self.name_emb, sequence_length=self.name_num, dtype=tf.float32)
       self.state = state
+      self.encoder_output = outputs
     return outputs, state
 
   def decode_step(self, input, pre_state, reuse=True):
     if reuse:
       tf.get_variable_scope().reuse_variables()
+
+    if self.encoder_output is not None:
+      att = attention(pre_state, self.encoder_output, False)
+      input = tf.layers.dense(tf.concat([input, att], axis=1), 64)
     output, state = self.cell(input, pre_state)
+
     return output, state
+
 
   def decode_zi(self):
     state = self.state
@@ -172,9 +233,7 @@ def test():
         print(term, value)
 
 
-
 def train():
-
   word_id = {}
   word_id_f = open('model/word_id', 'r').readlines()
   for line in word_id_f:
@@ -214,7 +273,6 @@ def train():
       decay_rate=0.3,
       staircase=False)
     optimizer = tf.train.AdamOptimizer(learning_rate)
-
 
     train_tensor = tf.contrib.slim.learning.create_train_op(
       total_loss=model.batch_loss,
@@ -260,7 +318,8 @@ def train():
             names_num_batch = [bucket] * len(names_batch)
             i += batch_size
 
-            feed_dict = {"name:0": names_batch, "zi:0": zis_batch, "target:0": target_batch, "name_num:0": names_num_batch}
+            feed_dict = {"name:0": names_batch, "zi:0": zis_batch, "target:0": target_batch,
+                         "name_num:0": names_num_batch}
 
             summary, batch_loss, np_global_step = \
               sess.run([merged_summary_op, train_tensor, model.global_step], feed_dict=feed_dict)
@@ -273,5 +332,5 @@ def train():
       save_path = os.path.join(checkpoint_dir, "model.ckpt")
       saver.save(sess, save_path, global_step=model.global_step)
 
-train()
 
+train()
